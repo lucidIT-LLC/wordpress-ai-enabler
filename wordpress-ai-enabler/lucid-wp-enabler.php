@@ -4,7 +4,7 @@
  * Plugin URI:        https://o-matic.ai
  * Description:       Full WordPress abilities surface for the MCP Adapter, plus a first-party Elementor MCP. Content, users, comments, plugins, options, menus, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor structure, elements, templates, global design tokens and SVG upload.
  * Version:           2.3.0
- * Author:            James Walker / O-Matic AI Research Lab
+ * Author:            LucidIT, LLC / O-Matic AI Research Lab
  * Author URI:        https://o-matic.ai
  * License:           GPL-2.0+
  * Text Domain:       lucid-wp-enabler
