@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       LucidIT WordPress Enabler
  * Plugin URI:        https://o-matic.ai
- * Description:       Full WordPress abilities surface for the MCP Adapter, plus a first-party Elementor MCP. Content, users, comments, plugins, options, menus, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor structure, elements, templates, global design tokens and SVG upload.
- * Version:           2.3.0
+ * Description:       Full WordPress abilities surface for the MCP Adapter, plus a first-party Elementor MCP. Content, users, comments, plugins, options, menus (read and write, incl. Polylang switcher), block-theme template parts and navigation, public-render verification, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor structure, elements, templates, global design tokens and SVG upload.
+ * Version:           2.4.0
  * Author:            LucidIT, LLC / O-Matic AI Research Lab
  * Author URI:        https://o-matic.ai
  * License:           GPL-2.0+
@@ -23,6 +23,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  * server, no second endpoint to configure.
  */
 require_once __DIR__ . '/includes/elementor-abilities.php';
+
+/**
+ * Menu write, block-theme (site editor) and public-render verification
+ * abilities (2.4.0). Same hooks, same endpoint.
+ */
+require_once __DIR__ . '/includes/site-navigation-abilities.php';
 
 add_action( 'wp_abilities_api_categories_init', 'omatic_register_categories' );
 add_action( 'wp_abilities_api_init', 'omatic_register_abilities' );

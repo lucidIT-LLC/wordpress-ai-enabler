@@ -12,7 +12,7 @@
 
 A full WordPress abilities surface for the [WordPress MCP Adapter](https://github.com/WordPress/mcp-adapter), plus a first-party Elementor MCP — one plugin, one endpoint, no second server to configure.
 
-This plugin registers **65 abilities** that turn a WordPress site into something an AI agent can actually operate, not just read about:
+This plugin registers **81 abilities** that turn a WordPress site into something an AI agent can actually operate, not just read about:
 
 - **Content** — posts and pages CRUD, with meta, slug, template, and featured image
 - **Taxonomy** — categories, tags, and custom taxonomy, full CRUD
@@ -21,7 +21,9 @@ This plugin registers **65 abilities** that turn a WordPress site into something
 - **Users** — list, get, create, update, delete, with role and meta management
 - **Comments** — list, get, moderate, delete, counts
 - **Plugins** — list installed (with update check), activate, deactivate
-- **Menus** — list menus with locations, get menu items
+- **Menus** — list menus with locations, get menu items; create menus, add / update / delete items (page, post, custom link, and a Polylang language-switcher item stored exactly as Polylang stores it), assign a menu to a theme location — per Polylang language when Polylang is active
+- **Site Editor** — read and update block-theme template parts by slug and `wp_navigation` posts by ID, insert Polylang's language-switcher block into either, and an automatic per-write snapshot with `site-editor-restore-snapshot`
+- **Verify** — fetch a public URL on the site server-side as an anonymous visitor and report which strings actually render; list the per-language URLs Polylang reports for a post
 - **Themes** — active theme info with page templates, list all installed
 - **Search** — site-wide search across all post types
 - **Elementor** — page/element discovery and editing, global design tokens, template import/export, SVG upload, and automatic per-write snapshots so every change is one call from being undone

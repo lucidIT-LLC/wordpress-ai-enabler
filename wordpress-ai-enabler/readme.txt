@@ -4,16 +4,16 @@ Tags: abilities-api, mcp, ai, automation
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.3.0
+Stable tag: 2.4.0
 License: GPL-2.0+
 
-Registers 43 WordPress abilities for the MCP Adapter — content, users, comments, plugins, options, menus, themes, media, meta, taxonomy CRUD, and site-wide search.
+Registers 81 WordPress abilities for the MCP Adapter — content, users, comments, plugins, options, menus (read and write), block-theme template parts and navigation, public-render verification, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor.
 
 == Description ==
 
 The LucidIT WordPress Enabler exposes WordPress capabilities through the Abilities API, enabling AI agents and automation tools to interact with your site via the MCP Adapter.
 
-**Ability Categories (10):**
+**Ability Categories (13):**
 
 * Content — Posts and pages CRUD with meta, slug, template, and featured image support
 * Taxonomy — Categories, tags, and custom taxonomy full CRUD
@@ -22,7 +22,9 @@ The LucidIT WordPress Enabler exposes WordPress capabilities through the Abiliti
 * Users — List, get, create, update, delete with role and meta management
 * Comments — List, get, moderate, delete, counts
 * Plugins — List installed (with update check), activate, deactivate
-* Menus — List menus with locations, get menu items
+* Menus — List menus with locations, get menu items; create menus, add/update/delete items (page, post, custom link, Polylang language switcher), assign locations
+* Site Editor — Read/update block-theme template parts and wp_navigation posts, insert Polylang's language-switcher block, automatic snapshots with restore
+* Verify — Fetch a public URL on the site server-side and report which strings render; per-language URLs Polylang reports for a post
 * Themes — Active theme info with page templates, list all installed
 * Search — Site-wide search across all post types
 
@@ -40,6 +42,13 @@ The LucidIT WordPress Enabler exposes WordPress capabilities through the Abiliti
 3. Requires the MCP Adapter plugin to be installed and active
 
 == Changelog ==
+
+= 2.4.0 =
+* Added: Menus write — omatic/menus-create, menus-add-item, menus-update-item, menus-delete-item, menus-assign-location. Items: page, post, custom link, and a Polylang language switcher stored the way Polylang stores it (custom item with url #pll_switcher and _pll_menu_item options meta; Polylang source src/admin/admin-nav-menu.php, 3.8.9). menus-assign-location takes an optional Polylang language and writes that language's assignment where Polylang keeps it (polylang[nav_menus][theme][location][lang]).
+* Added: Site Editor — omatic/template-parts-list, template-parts-get, template-parts-update (by theme//slug; a theme-file part is materialised as a customised copy first, as core's WP_REST_Templates_Controller does), navigation-list, navigation-get, navigation-update (wp_navigation posts), insert-language-switcher (polylang/navigation-language-switcher into a navigation post, or polylang/language-switcher into a template part; refuses when the block is not registered).
+* Added: Site Editor safety — every template-part and navigation write takes a rolling snapshot first (8 held per post, same mechanism as the Elementor abilities); omatic/site-editor-list-snapshots and site-editor-restore-snapshot. The first snapshot on a materialised part is the pristine theme file.
+* Added: Verify — omatic/verify-public-render (server-side wp_remote_get of a same-host URL with no cookies, reports which strings appear) and omatic/polylang-post-urls (per-language permalinks and home URLs Polylang reports).
+* All new abilities: capability checks (edit_theme_options for menus and site editor), input sanitisation, both 7.1 unified and channel `public` flags. 16 new abilities; total 81.
 
 = 2.0.0 =
 * Full rewrite from O-Matic WP Abilities v1.0.2
