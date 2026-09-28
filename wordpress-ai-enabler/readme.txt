@@ -4,7 +4,7 @@ Tags: abilities-api, mcp, ai, automation
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.5.0
+Stable tag: 2.5.1
 License: GPL-2.0+
 
 Registers 81 WordPress abilities for the MCP Adapter — content, users, comments, plugins, options, menus (read and write), block-theme template parts and navigation, public-render verification, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor.
@@ -42,6 +42,11 @@ The LucidIT WordPress Enabler exposes WordPress capabilities through the Abiliti
 3. Requires the MCP Adapter plugin to be installed and active
 
 == Changelog ==
+
+= 2.5.1 =
+* Restored (present on every live site, missing from 2.5.0): omatic/migrate-legacy-o-matic-post and the optional omatic_legacy_redirect 301 redirect (template_redirect), both from the deployed 2.3.0 build; the 'page' alias on omatic/posts-list and omatic/search (task T-S7-002) from the 2.5.0 package build.
+* Options allowlist widened to the writes factory records show in use: omatic_* and ewww_image_optimizer_* prefixes; default_role may be set to an unprivileged role (never deleted); users_can_register may be set to 0 (never deleted).
+* Note: a separately built package also carried the number 2.5.0 (2026-09-11, lucidit.io/assets/plugin-packages). 2.5.1 supersedes both and contains everything either one registers.
 
 = 2.5.0 =
 * Security: omatic/elementor-upload-svg now sanitizes with a DOMDocument allowlist (includes/svg-sanitizer.php) in place of the regex sanitizer, which let `<svg/onload=...>`, unquoted `href=javascript:` and entity-encoded `&#106;avascript:` through. DOCTYPE internal subsets and ENTITY declarations are refused; only allowlisted SVG elements and attributes survive; href must be a #fragment (http(s) also on <a>, base64 raster data: also on <image>); url() must be url(#fragment).

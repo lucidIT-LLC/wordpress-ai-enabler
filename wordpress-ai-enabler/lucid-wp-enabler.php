@@ -3,7 +3,7 @@
  * Plugin Name:       LucidIT WordPress Enabler
  * Plugin URI:        https://o-matic.ai
  * Description:       Full WordPress abilities surface for the MCP Adapter, plus a first-party Elementor MCP. Content, users, comments, plugins, options, menus (read and write, incl. Polylang switcher), block-theme template parts and navigation, public-render verification, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor structure, elements, templates, global design tokens and SVG upload.
- * Version:           2.5.0
+ * Version:           2.5.1
  * Author:            LucidIT, LLC / O-Matic AI Research Lab
  * Author URI:        https://o-matic.ai
  * License:           GPL-2.0+
@@ -48,6 +48,7 @@ require_once __DIR__ . '/includes/site-navigation-abilities.php';
 
 add_action( 'wp_abilities_api_categories_init', 'omatic_register_categories' );
 add_action( 'wp_abilities_api_init', 'omatic_register_abilities' );
+add_action( 'template_redirect', 'omatic_legacy_site_redirect', 1 );
 
 // ─────────────────────────────────────────────
 // CATEGORIES
@@ -115,7 +116,8 @@ function omatic_register_abilities() {
             'properties' => array(
                 'status'         => array( 'type' => 'string', 'default' => 'publish', 'description' => 'Post status filter: publish, draft, pending, private, trash, any.' ),
                 'posts_per_page' => array( 'type' => 'integer', 'default' => 10, 'description' => 'Number of posts per page. Use -1 for all (caution on large sites).' ),
-                'paged'          => array( 'type' => 'integer', 'default' => 1, 'description' => 'Page number for pagination.' ),
+                'paged'          => array( 'type' => 'integer', 'default' => 1, 'description' => 'Page number for pagination (WP_Query native name).' ),
+                'page'           => array( 'type' => 'integer', 'description' => "Alias of 'paged'. Accepted because callers reliably try this name first; 'paged' wins if both are sent." ),
                 'search'         => array( 'type' => 'string', 'description' => 'Search keyword to filter posts.' ),
                 'category_name'  => array( 'type' => 'string', 'description' => 'Filter by category slug.' ),
                 'tag'            => array( 'type' => 'string', 'description' => 'Filter by tag slug.' ),
@@ -192,6 +194,24 @@ function omatic_register_abilities() {
         'execute_callback'    => 'omatic_cb_posts_update',
         'meta'                => array( 'mcp' => array( 'public' => true ), 'annotations' => array( 'destructive' => false ) ),
         'permission_callback' => 'omatic_perm_edit_posts',
+    ) );
+
+    wp_register_ability( 'omatic/migrate-legacy-o-matic-post', array(
+        'label'               => 'Migrate Legacy O-MATIC Post',
+        'description'         => 'Copy one published post from the legacy o-matic.io site, retaining its title, body, slug and publication date. Duplicate slugs are returned without creating a second post.',
+        'category'            => 'content',
+        'input_schema'        => array(
+            'type'       => 'object',
+            'required'   => array( 'legacy_post_id' ),
+            'properties' => array(
+                'legacy_post_id' => array( 'type' => 'integer', 'description' => 'Published WordPress post ID on www.o-matic.io.' ),
+                'status'         => array( 'type' => 'string', 'default' => 'publish' ),
+                'category_id'    => array( 'type' => 'integer', 'description' => 'Target category ID. Defaults to Uncategorized.' ),
+            ),
+        ),
+        'execute_callback'    => 'omatic_cb_migrate_legacy_o_matic_post',
+        'meta'                => array( 'mcp' => array( 'public' => true ), 'annotations' => array( 'destructive' => false ) ),
+        'permission_callback' => 'omatic_perm_publish_posts',
     ) );
 
     wp_register_ability( 'omatic/posts-delete', array(
@@ -459,7 +479,7 @@ function omatic_register_abilities() {
 
     wp_register_ability( 'omatic/options-update', array(
         'label'               => 'Update Option',
-        'description'         => 'Write a WordPress option value. Restricted to an allowlist: general, reading, discussion and media settings, and elementor_* options. Security-sensitive options (users_can_register, default_role, admin_email, active_plugins, siteurl, home, role definitions, keys and salts) are refused.',
+        'description'         => 'Write a WordPress option value. Restricted to an allowlist: general, reading, discussion and media settings; omatic_*, elementor_* and ewww_image_optimizer_* options; default_role only to an unprivileged role (e.g. subscriber); users_can_register only to 0. admin_email, active_plugins, siteurl, home, role definitions, keys and salts are refused.',
         'category'            => 'site',
         'input_schema'        => array(
             'type'       => 'object',
@@ -888,7 +908,8 @@ function omatic_register_abilities() {
                 'query'          => array( 'type' => 'string', 'description' => 'Search keyword(s).' ),
                 'post_type'      => array( 'type' => 'string', 'default' => 'any', 'description' => 'Filter by post type: post, page, attachment, any, or custom type slug.' ),
                 'posts_per_page' => array( 'type' => 'integer', 'default' => 20 ),
-                'paged'          => array( 'type' => 'integer', 'default' => 1 ),
+                'paged'          => array( 'type' => 'integer', 'default' => 1, 'description' => 'Page number for pagination (WP_Query native name).' ),
+                'page'           => array( 'type' => 'integer', 'description' => "Alias of 'paged'. Accepted because callers reliably try this name first; 'paged' wins if both are sent." ),
             ),
         ),
         'execute_callback'    => 'omatic_cb_search',
@@ -923,11 +944,23 @@ function omatic_perm_edit_theme_options() { return current_user_can( 'edit_theme
 // ─────────────────────────────────────────────
 
 function omatic_cb_posts_list( $input ) {
+    // 'paged' is the WP_Query-native key and wins when a caller sends it
+    // explicitly. 'page' is accepted as an alias: it is the name every REST-
+    // style caller reaches for first, and silently ignoring it here is what
+    // previously made every page request fall back to the paged=1 default
+    // while still reporting the true total/pages — a truncated result set
+    // that looked complete. See task T-S7-002.
+    $requested_page = 1;
+    if ( isset( $input['paged'] ) && '' !== $input['paged'] ) {
+        $requested_page = (int) $input['paged'];
+    } elseif ( isset( $input['page'] ) && '' !== $input['page'] ) {
+        $requested_page = (int) $input['page'];
+    }
     $args = array(
         'post_type'      => 'post',
         'post_status'    => isset( $input['status'] ) ? $input['status'] : 'publish',
         'posts_per_page' => isset( $input['posts_per_page'] ) ? (int) $input['posts_per_page'] : 10,
-        'paged'          => isset( $input['paged'] ) ? (int) $input['paged'] : 1,
+        'paged'          => max( 1, $requested_page ),
         'orderby'        => isset( $input['orderby'] ) ? $input['orderby'] : 'date',
         'order'          => isset( $input['order'] ) ? $input['order'] : 'DESC',
     );
@@ -998,6 +1031,54 @@ function omatic_cb_posts_create( $input ) {
         return array( 'error' => $id->get_error_message() );
     }
     return array( 'success' => true, 'post_id' => $id, 'permalink' => get_permalink( $id ), 'edit_link' => get_edit_post_link( $id, 'raw' ) );
+}
+
+/**
+ * Import one public legacy O-MATIC article. The source is intentionally fixed
+ * to the retiring first-party site; callers cannot use this as a general URL
+ * fetcher or an arbitrary-content publishing proxy.
+ */
+function omatic_cb_migrate_legacy_o_matic_post( $input ) {
+    $legacy_id = absint( $input['legacy_post_id'] );
+    if ( ! $legacy_id ) return array( 'error' => 'A valid legacy post ID is required.' );
+
+    $response = wp_remote_get(
+        'https://www.o-matic.io/wp-json/wp/v2/posts/' . $legacy_id . '?context=view',
+        array( 'timeout' => 20, 'redirection' => 2, 'user-agent' => 'O-Matic migration/1.0' )
+    );
+    if ( is_wp_error( $response ) ) return array( 'error' => 'Legacy source could not be read: ' . $response->get_error_message() );
+    if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) return array( 'error' => 'Legacy source returned HTTP ' . (int) wp_remote_retrieve_response_code( $response ) . '.' );
+
+    $source = json_decode( wp_remote_retrieve_body( $response ), true );
+    if ( ! is_array( $source ) || empty( $source['slug'] ) || empty( $source['title']['rendered'] ) ) return array( 'error' => 'Legacy source response was incomplete.' );
+
+    $slug     = sanitize_title( $source['slug'] );
+    $existing = get_page_by_path( $slug, OBJECT, 'post' );
+    if ( $existing ) {
+        return array( 'success' => true, 'created' => false, 'post_id' => $existing->ID, 'permalink' => get_permalink( $existing->ID ), 'message' => 'A post with this legacy slug already exists.' );
+    }
+
+    $date    = isset( $source['date'] ) ? omatic_sanitize_post_date( $source['date'] ) : '';
+    $content = isset( $source['content']['rendered'] ) ? $source['content']['rendered'] : '';
+    $note    = '<hr><p><strong>Update from O-MATIC</strong> — This Field Note was first published on ' . esc_html( $date ? $date : 'the legacy O-MATIC site' ) . '. It is preserved as part of our research record; implementation details and product language may have changed. See <a href="/o-matic-server/">O-MATIC Server</a> for the current foundation.</p>';
+
+    $data = array(
+        'post_title'   => wp_strip_all_tags( $source['title']['rendered'] ),
+        'post_content' => wp_kses_post( $content . $note ),
+        'post_excerpt' => isset( $source['excerpt']['rendered'] ) ? wp_strip_all_tags( $source['excerpt']['rendered'] ) : '',
+        'post_status'  => sanitize_text_field( isset( $input['status'] ) ? $input['status'] : 'publish' ),
+        'post_name'    => $slug,
+        'post_author'  => get_current_user_id(),
+        'post_type'    => 'post',
+        'meta_input'   => array( '_omatic_legacy_post_id' => $legacy_id, '_omatic_legacy_published_at' => $date ),
+    );
+    if ( $date ) $data['post_date'] = $date;
+    if ( ! empty( $input['category_id'] ) ) $data['post_category'] = array( absint( $input['category_id'] ) );
+
+    $target_id = wp_insert_post( $data, true );
+    if ( is_wp_error( $target_id ) ) return array( 'error' => $target_id->get_error_message() );
+
+    return array( 'success' => true, 'created' => true, 'post_id' => $target_id, 'permalink' => get_permalink( $target_id ), 'legacy_post_id' => $legacy_id, 'legacy_date' => $date );
 }
 
 function omatic_cb_posts_update( $input ) {
@@ -1327,7 +1408,11 @@ function omatic_options_write_allowlist() {
         // Privacy page.
         'wp_page_for_privacy_policy',
     );
-    $prefixes = array( 'elementor_' );
+    // Prefixes: this plugin's own options (omatic_legacy_redirect drives
+    // omatic_legacy_site_redirect()), Elementor settings, and plugin settings
+    // factory records show being written through this ability
+    // (ewww_image_optimizer_lazy_load, lucidIT task #84).
+    $prefixes = array( 'omatic_', 'elementor_', 'ewww_image_optimizer_' );
 
     $names    = (array) apply_filters( 'omatic_options_write_allowlist', $names );
     $prefixes = (array) apply_filters( 'omatic_options_write_allowed_prefixes', $prefixes );
@@ -1340,11 +1425,24 @@ function omatic_options_write_allowlist() {
  * @param string $name Option name.
  * @return bool
  */
-function omatic_option_is_writable( $name ) {
+function omatic_option_is_writable( $name, $value = null, $op = 'update' ) {
     $name = (string) $name;
     if ( '' === $name ) {
         return false;
     }
+
+    // Two security settings may be written only in the hardening direction,
+    // never deleted. Factory records show default_role being lowered from
+    // administrator to subscriber through this ability (lucidIT decision #89),
+    // so that use stays; raising it to a privileged role, or opening
+    // registration, is the escalation W3 closes.
+    if ( 'default_role' === $name ) {
+        return 'update' === $op && omatic_role_is_unprivileged( $value );
+    }
+    if ( 'users_can_register' === $name ) {
+        return 'update' === $op && empty( $value );
+    }
+
     $allow = omatic_options_write_allowlist();
     if ( in_array( $name, $allow['names'], true ) ) {
         return true;
@@ -1357,12 +1455,42 @@ function omatic_option_is_writable( $name ) {
     return false;
 }
 
+/**
+ * Whether a role name exists and carries none of the capabilities that make
+ * a self-registered account an administrator in all but name.
+ *
+ * @param mixed $role Role slug.
+ * @return bool
+ */
+function omatic_role_is_unprivileged( $role ) {
+    if ( ! is_string( $role ) || '' === $role || ! function_exists( 'get_role' ) ) {
+        return false;
+    }
+    $obj = get_role( $role );
+    if ( ! $obj ) {
+        return false;
+    }
+    $privileged = array(
+        'manage_options', 'promote_users', 'edit_users', 'create_users', 'delete_users',
+        'list_users', 'remove_users', 'install_plugins', 'activate_plugins', 'edit_plugins',
+        'update_plugins', 'delete_plugins', 'install_themes', 'edit_themes', 'switch_themes',
+        'edit_theme_options', 'update_core', 'edit_files', 'unfiltered_html', 'unfiltered_upload',
+        'import', 'export', 'manage_network', 'manage_sites',
+    );
+    foreach ( $privileged as $cap ) {
+        if ( $obj->has_cap( $cap ) ) {
+            return false;
+        }
+    }
+    return true;
+}
+
 function omatic_cb_options_update( $input ) {
     $name  = sanitize_text_field( $input['option_name'] );
     $value = $input['option_value'];
 
-    if ( ! omatic_option_is_writable( $name ) ) {
-        return array( 'error' => "Option '$name' is not on the write allowlist. Only site settings (general, reading, discussion, media) and elementor_* options can be changed through this ability; use the dedicated plugins/users/themes/menus abilities for those areas." );
+    if ( ! omatic_option_is_writable( $name, $value, 'update' ) ) {
+        return array( 'error' => "Option '$name' is not on the write allowlist (or this value is refused). Allowed: general, reading, discussion and media settings; omatic_*, elementor_* and ewww_image_optimizer_* options; default_role only to an unprivileged role; users_can_register only to 0. Extend with the omatic_options_write_allowlist / omatic_options_write_allowed_prefixes filters." );
     }
 
     $result = update_option( $name, $value );
@@ -1399,7 +1527,7 @@ function omatic_cb_options_list( $input ) {
 
 function omatic_cb_options_delete( $input ) {
     $name   = sanitize_text_field( $input['option_name'] );
-    if ( ! omatic_option_is_writable( $name ) ) {
+    if ( ! omatic_option_is_writable( $name, null, 'delete' ) ) {
         return array( 'error' => "Option '$name' is not on the write allowlist; refusing to delete it." );
     }
     $result = delete_option( $name );
@@ -1813,12 +1941,24 @@ function omatic_cb_themes_list( $input ) {
 
 function omatic_cb_search( $input ) {
     $post_type = isset( $input['post_type'] ) ? $input['post_type'] : 'any';
+    // 'paged' is the WP_Query-native key and wins when a caller sends it
+    // explicitly. 'page' is accepted as an alias: it is the name every REST-
+    // style caller reaches for first, and silently ignoring it here is what
+    // previously made every page request fall back to the paged=1 default
+    // while still reporting the true total/pages — a truncated result set
+    // that looked complete. See task T-S7-002.
+    $requested_page = 1;
+    if ( isset( $input['paged'] ) && '' !== $input['paged'] ) {
+        $requested_page = (int) $input['paged'];
+    } elseif ( isset( $input['page'] ) && '' !== $input['page'] ) {
+        $requested_page = (int) $input['page'];
+    }
     $args = array(
         's'              => sanitize_text_field( $input['query'] ),
         'post_type'      => $post_type,
         'post_status'    => 'any',
         'posts_per_page' => isset( $input['posts_per_page'] ) ? (int) $input['posts_per_page'] : 20,
-        'paged'          => isset( $input['paged'] ) ? (int) $input['paged'] : 1,
+        'paged'          => max( 1, $requested_page ),
     );
     $query   = new WP_Query( $args );
     $results = array();
@@ -1884,3 +2024,35 @@ function omatic_sanitize_post_date( $date ) {
     return wp_date( 'Y-m-d H:i:s', $timestamp, wp_timezone() );
 }
 
+/**
+ * Optional legacy-domain 301 redirect.
+ *
+ * Enable only on the retiring site with the `omatic_legacy_redirect` option:
+ * {"enabled":true,"target_base":"https://www.o-matic.ai","routes":{"/old/":"/new/"}}
+ * The default preserves each path, individual mappings override it, and all
+ * administrative, REST, login, cron and CLI traffic remains on the legacy host.
+ */
+function omatic_legacy_site_redirect() {
+    if ( is_admin() || wp_doing_ajax() || wp_doing_cron() || ( defined( 'WP_CLI' ) && WP_CLI ) ) return;
+
+    $config = get_option( 'omatic_legacy_redirect', array() );
+    if ( ! is_array( $config ) || empty( $config['enabled'] ) ) return;
+
+    $target_base = isset( $config['target_base'] ) ? untrailingslashit( esc_url_raw( $config['target_base'] ) ) : '';
+    $target_host = wp_parse_url( $target_base, PHP_URL_HOST );
+    if ( 'www.o-matic.ai' !== $target_host && 'o-matic.ai' !== $target_host ) return;
+
+    $request_uri = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '/';
+    $path        = wp_parse_url( $request_uri, PHP_URL_PATH );
+    $path        = is_string( $path ) && '' !== $path ? $path : '/';
+    if ( 0 === strpos( $path, '/wp-admin' ) || 0 === strpos( $path, '/wp-json' ) || '/wp-login.php' === $path ) return;
+
+    $routes      = isset( $config['routes'] ) && is_array( $config['routes'] ) ? $config['routes'] : array();
+    $destination = isset( $routes[ $path ] ) ? $routes[ $path ] : $path;
+    if ( ! is_string( $destination ) || 0 !== strpos( $destination, '/' ) ) return;
+
+    $query = wp_parse_url( $request_uri, PHP_URL_QUERY );
+    $url   = $target_base . $destination . ( $query ? '?' . $query : '' );
+    wp_safe_redirect( $url, 301, 'O-Matic legacy migration' );
+    exit;
+}
