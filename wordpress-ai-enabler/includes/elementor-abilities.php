@@ -36,6 +36,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 const OMATIC_EL_SNAPSHOT_META = '_omatic_el_snapshots';
 const OMATIC_EL_SNAPSHOT_MAX  = 8;
+const OMATIC_EL_SVG_MAX_BYTES = 2097152; // 2 MiB cap on a fetched SVG.
 
 add_action( 'wp_abilities_api_categories_init', 'omatic_el_register_category' );
 add_action( 'wp_abilities_api_init', 'omatic_el_register_abilities' );
@@ -430,34 +431,16 @@ function omatic_el_take_snapshot( $post_id, $reason = 'edit' ) {
 	if ( empty( $raw ) ) {
 		return false;
 	}
-
-	$snapshots = get_post_meta( $post_id, OMATIC_EL_SNAPSHOT_META, true );
-	if ( ! is_array( $snapshots ) ) {
-		$snapshots = array();
-	}
-
-	$key               = gmdate( 'Ymd-His' ) . '-' . substr( md5( (string) wp_rand() ), 0, 4 );
-	$snapshots[ $key ] = array(
-		'taken_at' => gmdate( 'c' ),
-		'reason'   => sanitize_text_field( (string) $reason ),
-		'bytes'    => strlen( (string) $raw ),
-		'data'     => $raw,
+	return omatic_snapshot_push(
+		$post_id,
+		OMATIC_EL_SNAPSHOT_META,
+		OMATIC_EL_SNAPSHOT_MAX,
+		$reason,
+		array(
+			'bytes' => strlen( (string) $raw ),
+			'data'  => $raw,
+		)
 	);
-
-	// Rolling cap — oldest out first.
-	while ( count( $snapshots ) > OMATIC_EL_SNAPSHOT_MAX ) {
-		array_shift( $snapshots );
-	}
-
-	// wp_slash() is load-bearing here too, and this is subtle enough to have
-	// shipped broken once: update_post_meta() unslashes whatever it is given,
-	// including recursively inside an array. The snapshot payload is raw JSON
-	// whose string values contain escaped quotes (\"), so storing it unslashed
-	// silently strips one backslash level and corrupts every snapshot. It looks
-	// fine — the array round-trips, the byte count is right — and only fails
-	// later, at restore, when the JSON no longer parses.
-	update_post_meta( $post_id, OMATIC_EL_SNAPSHOT_META, wp_slash( $snapshots ) );
-	return $key;
 }
 
 // ─────────────────────────────────────────────
@@ -465,45 +448,15 @@ function omatic_el_take_snapshot( $post_id, $reason = 'edit' ) {
 // ─────────────────────────────────────────────
 
 /**
- * Conservative SVG sanitiser. Strips script and event handlers, external
- * references, and the elements commonly used to smuggle HTML into an SVG.
- *
- * WordPress blocks SVG upload by default for exactly these reasons, so this
- * runs on every byte before anything reaches the media library.
+ * Sanitize SVG markup. Kept as the Elementor-facing name; the work is the
+ * parser-based allowlist sanitizer in includes/svg-sanitizer.php (task #1013,
+ * which replaced a regex sanitizer that passed three measured XSS payloads).
  *
  * @param string $svg Raw SVG markup.
- * @return string|WP_Error Sanitised markup, or an error.
+ * @return string|WP_Error Sanitized markup, or an error.
  */
 function omatic_el_sanitize_svg( $svg ) {
-	$svg = (string) $svg;
-
-	if ( false === stripos( $svg, '<svg' ) ) {
-		return new WP_Error( 'not_svg', 'Content does not contain an <svg> root element.' );
-	}
-
-	// Drop anything before the root and any XML/doctype preamble.
-	$start = stripos( $svg, '<svg' );
-	$svg   = substr( $svg, $start );
-
-	// Remove dangerous elements outright, including their contents.
-	$svg = preg_replace( '#<\s*(script|foreignObject|iframe|embed|object|handler|set|animate)\b[^>]*>.*?<\s*/\s*\1\s*>#is', '', $svg );
-	$svg = preg_replace( '#<\s*(script|foreignObject|iframe|embed|object|handler|set|animate)\b[^>]*/?>#is', '', $svg );
-
-	// Remove inline event handlers (onload, onclick, ...).
-	$svg = preg_replace( '#\son[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#is', '', $svg );
-
-	// Remove javascript:/data: URIs in href/xlink:href/src/style.
-	$svg = preg_replace( '#(href|xlink:href|src)\s*=\s*("|\')\s*(javascript|data)\s*:[^"\']*\2#is', '', $svg );
-	$svg = preg_replace( '#(style\s*=\s*")([^"]*)(expression|javascript:)([^"]*)(")#is', '$1$2$5', $svg );
-
-	// Remove external entity declarations.
-	$svg = preg_replace( '#<!ENTITY[^>]*>#is', '', $svg );
-
-	if ( preg_match( '#<\s*script#i', $svg ) ) {
-		return new WP_Error( 'svg_unsafe', 'SVG still contained a script element after sanitising; refusing.' );
-	}
-
-	return trim( $svg );
+	return omatic_svg_sanitize( $svg );
 }
 
 // ─────────────────────────────────────────────
@@ -889,7 +842,7 @@ function omatic_el_register_abilities() {
 		'omatic/elementor-upload-svg',
 		array(
 			'label'               => 'Upload SVG',
-			'description'         => 'Sanitise and upload an SVG into the media library from raw markup or a URL. WordPress blocks SVG upload by default; this strips scripts, event handlers and external references first.',
+			'description'         => 'Sanitise and upload an SVG into the media library from raw markup or a URL. WordPress blocks SVG upload by default; this parses it and keeps only an allowlist of SVG elements and attributes (no scripts, event handlers, foreignObject or external references). A url is fetched with wp_safe_remote_get (public http(s) hosts only, 2 MiB cap).',
 			'category'            => 'elementor',
 			'input_schema'        => array(
 				'type'       => 'object',
@@ -1524,7 +1477,17 @@ function omatic_cb_el_upload_svg( $input ) {
 		if ( ! wp_http_validate_url( $url ) ) {
 			return array( 'error' => 'url is not a valid, fetchable URL.' );
 		}
-		$response = wp_remote_get( $url, array( 'timeout' => 20 ) );
+		// wp_safe_remote_get() sets reject_unsafe_urls, so the caller cannot
+		// point this at loopback, private-range or non-http(s) targets (SSRF),
+		// and the body is capped: an SVG larger than this is refused below.
+		$response = wp_safe_remote_get(
+			$url,
+			array(
+				'timeout'             => 20,
+				'redirection'         => 3,
+				'limit_response_size' => OMATIC_EL_SVG_MAX_BYTES + 1,
+			)
+		);
 		if ( is_wp_error( $response ) ) {
 			return array( 'error' => 'Could not fetch url: ' . $response->get_error_message() );
 		}
@@ -1532,6 +1495,9 @@ function omatic_cb_el_upload_svg( $input ) {
 			return array( 'error' => 'Fetching url returned HTTP ' . wp_remote_retrieve_response_code( $response ) );
 		}
 		$svg = wp_remote_retrieve_body( $response );
+		if ( strlen( $svg ) > OMATIC_EL_SVG_MAX_BYTES ) {
+			return array( 'error' => 'Fetched SVG exceeds ' . OMATIC_EL_SVG_MAX_BYTES . ' bytes; refusing.' );
+		}
 	} else {
 		return array( 'error' => 'Provide either svg markup or a url.' );
 	}

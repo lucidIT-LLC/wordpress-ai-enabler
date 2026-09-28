@@ -3,7 +3,7 @@
  * Plugin Name:       LucidIT WordPress Enabler
  * Plugin URI:        https://o-matic.ai
  * Description:       Full WordPress abilities surface for the MCP Adapter, plus a first-party Elementor MCP. Content, users, comments, plugins, options, menus (read and write, incl. Polylang switcher), block-theme template parts and navigation, public-render verification, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor structure, elements, templates, global design tokens and SVG upload.
- * Version:           2.4.0
+ * Version:           2.5.0
  * Author:            LucidIT, LLC / O-Matic AI Research Lab
  * Author URI:        https://o-matic.ai
  * License:           GPL-2.0+
@@ -16,6 +16,22 @@
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+
+/**
+ * The plugin version, read from the Version header above so there is exactly
+ * one literal to bump (task #1013, W5).
+ */
+if ( ! defined( 'OMATIC_ENABLER_VERSION' ) ) {
+    $omatic_enabler_header = get_file_data( __FILE__, array( 'Version' => 'Version' ) );
+    define( 'OMATIC_ENABLER_VERSION', (string) $omatic_enabler_header['Version'] );
+    unset( $omatic_enabler_header );
+}
+
+/**
+ * Shared helpers (rolling snapshots) and the parser-based SVG sanitizer.
+ */
+require_once __DIR__ . '/includes/common.php';
+require_once __DIR__ . '/includes/svg-sanitizer.php';
 
 /**
  * Elementor abilities. Registered on the same Abilities API hooks and surfaced
@@ -443,7 +459,7 @@ function omatic_register_abilities() {
 
     wp_register_ability( 'omatic/options-update', array(
         'label'               => 'Update Option',
-        'description'         => 'Write a WordPress option value. Creates the option if it does not exist. Use with caution — this can change site behavior.',
+        'description'         => 'Write a WordPress option value. Restricted to an allowlist: general, reading, discussion and media settings, and elementor_* options. Security-sensitive options (users_can_register, default_role, admin_email, active_plugins, siteurl, home, role definitions, keys and salts) are refused.',
         'category'            => 'site',
         'input_schema'        => array(
             'type'       => 'object',
@@ -477,7 +493,7 @@ function omatic_register_abilities() {
 
     wp_register_ability( 'omatic/options-delete', array(
         'label'               => 'Delete Option',
-        'description'         => 'Remove a WordPress option by key.',
+        'description'         => 'Remove a WordPress option by key. Restricted to the same allowlist as omatic/options-update.',
         'category'            => 'site',
         'input_schema'        => array(
             'type'       => 'object',
@@ -1274,14 +1290,79 @@ function omatic_cb_options_get( $input ) {
     return array( 'option_name' => $name, 'option_value' => $value );
 }
 
+/**
+ * Options the options-update and options-delete abilities may change.
+ *
+ * An allowlist, not a blocklist (task #1013, W3): the 2.4.0 blocklist missed
+ * users_can_register, default_role, admin_email, active_plugins and
+ * <prefix>user_roles, any of which turns an options write into a privilege
+ * escalation or a site takeover, and options-delete had no guard at all (it
+ * could delete siteurl and home). Only site-content settings a site builder
+ * legitimately changes are listed. Plugins, users, themes and menus have their
+ * own abilities with their own capability checks.
+ *
+ * Extend deliberately with the `omatic_options_write_allowlist` filter
+ * (exact names) and `omatic_options_write_allowed_prefixes` filter.
+ *
+ * @return array{names: string[], prefixes: string[]}
+ */
+function omatic_options_write_allowlist() {
+    $names = array(
+        // General.
+        'blogname', 'blogdescription', 'timezone_string', 'gmt_offset',
+        'date_format', 'time_format', 'start_of_week', 'WPLANG', 'site_icon',
+        // Reading.
+        'show_on_front', 'page_on_front', 'page_for_posts', 'posts_per_page',
+        'posts_per_rss', 'rss_use_excerpt', 'blog_public',
+        // Discussion.
+        'default_comment_status', 'default_ping_status', 'comment_moderation',
+        'comment_registration', 'close_comments_for_old_posts', 'close_comments_days_old',
+        'thread_comments', 'thread_comments_depth', 'page_comments', 'comments_per_page',
+        'default_comments_page', 'comment_order', 'comment_previously_approved',
+        'require_name_email', 'show_avatars', 'avatar_rating', 'avatar_default',
+        // Media.
+        'thumbnail_size_w', 'thumbnail_size_h', 'thumbnail_crop',
+        'medium_size_w', 'medium_size_h', 'large_size_w', 'large_size_h',
+        'uploads_use_yearmonth_folders',
+        // Privacy page.
+        'wp_page_for_privacy_policy',
+    );
+    $prefixes = array( 'elementor_' );
+
+    $names    = (array) apply_filters( 'omatic_options_write_allowlist', $names );
+    $prefixes = (array) apply_filters( 'omatic_options_write_allowed_prefixes', $prefixes );
+    return array( 'names' => $names, 'prefixes' => $prefixes );
+}
+
+/**
+ * Whether an option may be written or deleted through the abilities.
+ *
+ * @param string $name Option name.
+ * @return bool
+ */
+function omatic_option_is_writable( $name ) {
+    $name = (string) $name;
+    if ( '' === $name ) {
+        return false;
+    }
+    $allow = omatic_options_write_allowlist();
+    if ( in_array( $name, $allow['names'], true ) ) {
+        return true;
+    }
+    foreach ( $allow['prefixes'] as $prefix ) {
+        if ( '' !== (string) $prefix && 0 === strpos( $name, (string) $prefix ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function omatic_cb_options_update( $input ) {
     $name  = sanitize_text_field( $input['option_name'] );
     $value = $input['option_value'];
 
-    // Blocklist: never overwrite these via API
-    $blocked = array( 'siteurl', 'home', 'db_version', 'initial_db_version', 'secret', 'nonce_key', 'nonce_salt', 'auth_key', 'auth_salt', 'secure_auth_key', 'secure_auth_salt', 'logged_in_key', 'logged_in_salt' );
-    if ( in_array( $name, $blocked, true ) ) {
-        return array( 'error' => "Option '$name' is blocked from remote update for security." );
+    if ( ! omatic_option_is_writable( $name ) ) {
+        return array( 'error' => "Option '$name' is not on the write allowlist. Only site settings (general, reading, discussion, media) and elementor_* options can be changed through this ability; use the dedicated plugins/users/themes/menus abilities for those areas." );
     }
 
     $result = update_option( $name, $value );
@@ -1318,6 +1399,9 @@ function omatic_cb_options_list( $input ) {
 
 function omatic_cb_options_delete( $input ) {
     $name   = sanitize_text_field( $input['option_name'] );
+    if ( ! omatic_option_is_writable( $name ) ) {
+        return array( 'error' => "Option '$name' is not on the write allowlist; refusing to delete it." );
+    }
     $result = delete_option( $name );
     return array( 'success' => $result, 'option_name' => $name );
 }

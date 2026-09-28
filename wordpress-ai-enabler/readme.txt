@@ -4,7 +4,7 @@ Tags: abilities-api, mcp, ai, automation
 Requires at least: 6.9
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.4.0
+Stable tag: 2.5.0
 License: GPL-2.0+
 
 Registers 81 WordPress abilities for the MCP Adapter — content, users, comments, plugins, options, menus (read and write), block-theme template parts and navigation, public-render verification, themes, media, meta, taxonomy CRUD, site-wide search, and Elementor.
@@ -42,6 +42,13 @@ The LucidIT WordPress Enabler exposes WordPress capabilities through the Abiliti
 3. Requires the MCP Adapter plugin to be installed and active
 
 == Changelog ==
+
+= 2.5.0 =
+* Security: omatic/elementor-upload-svg now sanitizes with a DOMDocument allowlist (includes/svg-sanitizer.php) in place of the regex sanitizer, which let `<svg/onload=...>`, unquoted `href=javascript:` and entity-encoded `&#106;avascript:` through. DOCTYPE internal subsets and ENTITY declarations are refused; only allowlisted SVG elements and attributes survive; href must be a #fragment (http(s) also on <a>, base64 raster data: also on <image>); url() must be url(#fragment).
+* Security: the SVG url is fetched with wp_safe_remote_get (reject_unsafe_urls) and a 2 MiB limit_response_size.
+* Security (breaking): omatic/options-update and omatic/options-delete use a write allowlist (general, reading, discussion, media settings and elementor_* options) instead of a blocklist; options-delete previously had no guard. Extend with the omatic_options_write_allowlist and omatic_options_write_allowed_prefixes filters.
+* Internal: one rolling-snapshot mechanism (omatic_snapshot_push) for Elementor and Site Editor snapshots; stored format unchanged.
+* Internal: OMATIC_ENABLER_VERSION is read from the plugin header; the verify user agent uses it.
 
 = 2.4.0 =
 * Added: Menus write — omatic/menus-create, menus-add-item, menus-update-item, menus-delete-item, menus-assign-location. Items: page, post, custom link, and a Polylang language switcher stored the way Polylang stores it (custom item with url #pll_switcher and _pll_menu_item options meta; Polylang source src/admin/admin-nav-menu.php, 3.8.9). menus-assign-location takes an optional Polylang language and writes that language's assignment where Polylang keeps it (polylang[nav_menus][theme][location][lang]).

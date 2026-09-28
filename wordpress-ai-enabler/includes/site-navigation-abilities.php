@@ -365,10 +365,9 @@ function omatic_sn_block_names( $content ) {
 }
 
 /**
- * Store a post's current post_content in a rolling snapshot slot, mirroring
- * omatic_el_take_snapshot(). wp_slash() on the way in is load-bearing for the
- * same reason as there: update_post_meta() unslashes recursively, and block
- * markup carries JSON attributes with escaped quotes.
+ * Store a post's current post_content in a rolling snapshot slot through the
+ * shared omatic_snapshot_push() (includes/common.php), the same mechanism as
+ * omatic_el_take_snapshot().
  *
  * @return string|false Snapshot key, or false when the post does not exist.
  */
@@ -377,24 +376,18 @@ function omatic_sn_take_snapshot( $post_id, $reason = 'edit' ) {
 	if ( ! $post ) {
 		return false;
 	}
-	$snapshots = get_post_meta( $post_id, OMATIC_SE_SNAPSHOT_META, true );
-	if ( ! is_array( $snapshots ) ) {
-		$snapshots = array();
-	}
-	$key               = gmdate( 'Ymd-His' ) . '-' . substr( md5( (string) wp_rand() ), 0, 4 );
-	$snapshots[ $key ] = array(
-		'taken_at'  => gmdate( 'c' ),
-		'reason'    => sanitize_text_field( (string) $reason ),
-		'post_type' => $post->post_type,
-		'bytes'     => strlen( (string) $post->post_content ),
-		'title'     => $post->post_title,
-		'content'   => $post->post_content,
+	return omatic_snapshot_push(
+		$post_id,
+		OMATIC_SE_SNAPSHOT_META,
+		OMATIC_SE_SNAPSHOT_MAX,
+		$reason,
+		array(
+			'post_type' => $post->post_type,
+			'bytes'     => strlen( (string) $post->post_content ),
+			'title'     => $post->post_title,
+			'content'   => $post->post_content,
+		)
 	);
-	while ( count( $snapshots ) > OMATIC_SE_SNAPSHOT_MAX ) {
-		array_shift( $snapshots );
-	}
-	update_post_meta( $post_id, OMATIC_SE_SNAPSHOT_META, wp_slash( $snapshots ) );
-	return $key;
 }
 
 /**
@@ -1407,7 +1400,7 @@ function omatic_cb_sn_verify_public_render( $input ) {
 			'redirection' => 3,
 			'cookies'     => array(),
 			'headers'     => array( 'Cache-Control' => 'no-cache', 'Pragma' => 'no-cache' ),
-			'user-agent'  => 'LucidIT-WP-Enabler/2.4.0 verify (+' . $home . ')',
+			'user-agent'  => 'LucidIT-WP-Enabler/' . OMATIC_ENABLER_VERSION . ' verify (+' . $home . ')',
 		)
 	);
 	if ( is_wp_error( $response ) ) {
